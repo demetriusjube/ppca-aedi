@@ -1,0 +1,309 @@
+---
+title: "Regressão - Aplicações em Dados Financeiros"
+author: "Professor João Gabriel de Moraes Souza"
+date: "29/07/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Bibliotecas Necessárias
+
+```{r}
+suppressMessages(library(tidyverse))
+suppressMessages(library(tidyquant))
+suppressMessages(library(timetk))
+suppressMessages(library(scales))
+suppressMessages(library(quantmod))
+suppressMessages(library(reshape2))
+suppressMessages(library(car))
+suppressMessages(library(agricolae))
+suppressMessages(library(ggpubr))
+suppressMessages(library(olsrr))
+suppressMessages(library(sandwich))
+suppressMessages(library(lmtest))
+suppressMessages(library(graphics))
+suppressMessages(library(forecast))
+```
+
+
+# Construindo Base de Dados
+
+```{r}
+acoes = c('BBAS3.SA', 'BRFS3.SA', 'CIEL3.SA', 'PETR3.SA', 'MGLU3.SA', '^BVSP')
+acoes_date = c('date', 'BBAS3.SA', 'BRFS3.SA', 'CIEL3.SA', 'PETR3.SA', 
+               'MGLU3.SA', '^BVSP')
+
+getSymbols(acoes, src='yahoo',
+from='2015-01-01',
+warning=FALSE) 
+
+
+prices = data.frame(rename_index = "date"(BBAS3.SA),BBAS3.SA$BBAS3.SA.Close,
+                   BRFS3.SA$BRFS3.SA.Close,
+                   CIEL3.SA$CIEL3.SA.Close,PETR3.SA$PETR3.SA.Close, 
+                   MGLU3.SA$MGLU3.SA.Close, BVSP$BVSP.Close) %>%
+        `colnames<-` (acoes_date) %>%
+        drop_na()
+head(prices)
+
+```
+
+# Calculando Retornos
+
+Os retornos calculados serão os valores de retornos contínuos, ou seja $\mathbb{E}(R_{i}) = log(P_{it}) - log(P_{it-1})$.
+
+```{r}
+returns = prices %>%
+gather(asset, prices, -date) %>%
+group_by(asset) %>%
+tq_transmute(mutate_fun = periodReturn,
+period='daily',
+type='log') %>%
+spread(asset, daily.returns) %>%
+select(date, acoes)
+head(returns)
+```
+
+Para visualização criamos um gráfico similar ao feito no Python
+
+```{r}
+returns_melt = melt(returns, id.vars = "date")
+  colnames(returns_melt) = c("date", "acoes", "retornos")
+
+ggplot(returns_melt, aes(x=date, y= retornos, col = acoes))+
+  geom_line() +
+  theme_classic() +
+  geom_smooth(method = "lm", col="red") +
+  labs(x='', y='',
+title='Log-Retornos diários de ações brasileiras selecionadas',
+caption='Dados do Yahoo Finance')
+```
+
+# Calculando da Carteira 
+
+Para a construção da Carteira iremos aplicar a seguinte fórmula:
+
+\[ \mathbb{E}(R_{pt}) = \sum^{n}_{i=1} \sum^{T}_{t=1} w_{i} \mathbb{E}(R_{it})\]
+
+Para isso vamos usar o *dataframe* chamado *returns_melt*.
+
+```{r}
+pesos = c(0.15, 0.15, 0.15, 0.15, 0.4, 0)
+pesos
+sum(pesos)
+```
+
+```{r}
+wts_tbl <- tibble(acoes = acoes,
+                  wts = pesos)
+head(wts_tbl)
+```
+
+```{r}
+returns_port = left_join(returns_melt,wts_tbl, by = 'acoes')
+head(returns_port)
+```
+
+```{r}
+returns_port %>%
+  group_by(acoes) %>%
+  slice(c(1,2))
+```
+
+```{r}
+returns_port <- returns_port %>%
+  mutate(wt_retornos = wts * retornos)
+```
+
+Vamos agora dar uma olhada na nova variável criada
+
+```{r}
+returns_port %>%
+  group_by(acoes) %>%
+  slice(c(1,2))
+```
+
+Agora temos os retornos ponderados pelos pesos de cada investimento das ações na carteira, basta então somar estes valores por grupo de ação e teremos os valores dos retornos diários da carteira.
+
+```{r}
+returns_port <- returns_port %>%
+  group_by(date) %>%
+  summarise(port_ret = sum(wt_retornos))
+
+head(returns_port)
+```
+
+Juntamos agora com a base de retornos
+
+```{r}
+returns = left_join(returns ,returns_port, by = 'date')
+head(returns)
+```
+
+```{r}
+returns_port_melt = returns %>% 
+  select(c(date,`^BVSP`, port_ret))
+
+returns_port_melt_plot = melt(returns_port_melt , id.vars = "date")
+  colnames(returns_port_melt_plot) = c("date", "acoes", "retornos")
+  
+returns_port_melt_plot %>%
+  group_by(acoes) %>%
+  slice(c(1,2))
+```
+
+```{r}
+ggplot(returns_port_melt_plot, aes(x=date, y= retornos, col = acoes))+
+  geom_line() +
+  theme_classic() +
+  geom_smooth(method = "lm", col="red") +
+   geom_ribbon(aes(ymin = min(retornos), ymax = max(retornos), group = acoes), 
+               alpha = 0.05) +
+  labs(x='', y='Retornos',
+title='Log-Retornos diários do Portfólio X IBOV',
+caption='Dados do Yahoo Finance')
+```
+
+
+# Analisando as FDPs das variáveis de interesse
+
+Fazemos inicialmente uma inspeção visual dos histogramas de alguns retornos
+
+```{r}
+ggplot(returns) + 
+  geom_density(aes(x=port_ret), colour = "red") +
+  geom_histogram(aes(x=port_ret, y=..density..), alpha = 0.5) +
+  theme_classic()
+```
+
+```{r}
+ggplot(returns) + 
+  geom_density(aes(x=`^BVSP`), colour = "red") +
+  geom_histogram(aes(x=`^BVSP`, y=..density..), alpha = 0.5) +
+  theme_classic()
+```
+
+```{r}
+ggplot(returns) + 
+  geom_density(aes(x=BBAS3.SA), colour = "red") +
+  geom_histogram(aes(x=BBAS3.SA, y=..density..), alpha = 0.5) +
+  theme_classic()
+```
+
+```{r}
+ggplot(returns) + 
+  geom_density(aes(x=MGLU3.SA), colour = "red") +
+  geom_histogram(aes(x=MGLU3.SA, y=..density..), alpha = 0.5) +
+  theme_classic()
+```
+
+# Estimando o Modelo de Regressão
+
+De modo a estimar o modelo por MQO, definindo o retorno de um ativo qualquer $R_{i}$ como a variável dependente e o índice *IBOVESPA* como a variável independente, fazemos uso da função lm() do R para realizar uma regressão linear simples. Este modelo é conhecido como *Market Model*.
+
+\[
+\mathbb{E}(R_{i}) = \beta_{1} + \beta_{2} \cdot \mathbb{E}(R_{m})
+\]
+
+```{r}
+bb_market_model <- lm(BBAS3.SA ~ `^BVSP` , data = returns)
+summary(bb_market_model)
+```
+
+# Diagnóstico do Modelo
+
+```{r}
+ols_plot_resid_qq(bb_market_model)
+```
+
+```{r}
+ols_test_normality(bb_market_model)
+```
+
+```{r}
+ols_test_correlation(bb_market_model)
+```
+
+```{r}
+ols_plot_resid_fit(bb_market_model)
+```
+
+```{r}
+ols_plot_resid_hist(bb_market_model)
+```
+
+# Testes de Homogeneidade da Variância (Homecedasticidade) e Autocorrelação
+
+```{r}
+lmtest::bptest(bb_market_model)
+```
+
+```{r}
+car::ncvTest(bb_market_model)
+```
+
+```{r}
+lmtest::dwtest(bb_market_model)
+```
+
+# Corrigindo as Estimações para Heterocedasticidade
+
+```{r}
+coeftest(bb_market_model, vcov = vcovHC(bb_market_model, "HC1")) 
+```
+
+# Plotando as observações em um Gráfico
+
+Agora iremos plotar os dados e o modelo estimado em um gráfico.
+
+1º plotamos o gráfico só com as observações:
+
+```{r}
+data.graph = ggplot(returns, aes(x=`^BVSP`, y=BBAS3.SA))+
+                     geom_point() +
+                     theme_classic()
+data.graph
+```
+
+```{r}
+data.graph = data.graph + 
+  geom_smooth(method="lm", col="red", level=0.95)            
+
+data.graph
+```
+
+Por fim plotamos o gráfico com a regressão linear proposta
+
+```{r}
+data.graph <- data.graph +
+  stat_regline_equation()
+
+data.graph
+```
+
+## Forecast - Predição do Retornos Esperados do BB
+
+Vamos tentar agora gerar a predição com o modelo proposto.
+
+```{r}
+real_data_bb = returns %>% select(date, BBAS3.SA)
+predict_data_bb = data.frame(predict(bb_market_model))
+  colnames(predict_data_bb) = c("Predict_BB")
+  
+data_bb = cbind(real_data_bb, predict_data_bb)
+
+  
+ggplot(data_bb, aes(x=date))+
+  geom_line(aes(y = BBAS3.SA, colour = "BBAS3.SA")) +
+  geom_line(aes(y = Predict_BB, colour = "Predict_BB")) +
+  theme_classic() +
+  geom_hline(yintercept = 0, color="red", linetype = "dotdash") +
+  labs(x='', y='Retornos',
+title='Predição X Dados Reais do BB',
+color = "Retornos")  
+```

@@ -1,0 +1,316 @@
+---
+title: "ANOVA - Aplicação Real de Índice de Qualidade Percebida de Telecomunicações"
+subtitle: Estudo de Caso da ANATEL
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+Esse arquivo apresenta uma aplicação real de um projeto realizado na ANATEL. 
+
+# Análise de Variância do IQP das Operadoras Brasileiras
+
+## Importando as Bibliotecas Necessárias
+
+```{r}
+suppressMessages(library(car))
+suppressMessages(library(agricolae))
+suppressMessages(library(dplyr))
+suppressMessages(library(ggplot2))
+```
+
+Fazemos  em  primeiro um passo a criação de funções que irão nos ajudar a manipular os dados como queremos
+
+## Funções
+
+```{r}
+impute_na <- function(data, columns){
+  # data: data.frame, columns: character
+  
+  demais_cols <- base::setdiff(names(data), columns)
+  data0 <- data[demais_cols]
+  data_na <- data[columns]
+  
+  replace_na <- function(x){
+    x[is.na(x)] <- as.integer(mean(x, na.rm = TRUE))
+    return(x)
+  }
+  
+  data_na <- apply(
+    X = data_na, MARGIN = 2, FUN = replace_na
+  )
+  
+  data <- cbind(data0, data_na)
+  
+  return(data)
+}
+
+wilcox_teste <- function(f., groups, values, data, verbose = FALSE){
+  # f.: formula, groups: character(1), values: character(2)
+  # results: htest
+  
+  index <- (data[[groups]] %in% values)
+  data_sub <- data[index,]
+  
+  test <- wilcox.test(f., data = data_sub, exact = FALSE)
+  
+  if (verbose) {
+    cat("=============================================\n")
+    msg <- paste0(
+      values, collapse = ' VS '
+    )
+    cat("Testando diferenças para: ", msg, '\n')
+    print(test)
+    cat("---------------------------------------------\n")
+    return(invisible(test))
+  }
+  
+  return(test)
+}
+
+plot_media_indice <- function(data, servico){
+  # data: data.frame, servico: character(1)
+  
+  title. <- paste0('Média do índice para ', servico, ' - CI 95%')
+  #par(las = 1)
+  gplots::plotmeans(
+    indice ~ operadora, xlab = "Operadora", ylab = "Índice", 
+    main = title., data = data
+  )
+}
+```
+
+
+Depois importarmos os dados dos IQPS de cada serviço de telecomunicações.
+
+## Carregando os dados de IQP
+
+```{r}
+dados <- list(
+  pospre = read.csv2("indices/indice-af-pospre.csv", stringsAsFactors = TRUE),
+  bl = read.csv2("indices/indice-af-bl.csv", stringsAsFactors = TRUE),
+  tv = read.csv2("indices/indice-af-tv.csv", stringsAsFactors = TRUE),
+  tf = read.csv2("indices/indice-af-tf.csv", stringsAsFactors = TRUE)
+)
+
+cols_replace_na <- base::setdiff(names(dados$bl), c("response_id", "operadora"))
+
+dados <- lapply(
+  X = dados, FUN = impute_na, columns = cols_replace_na
+)
+```
+
+## Teste de Homogeneidade da variância do Erro
+
+
+Como vimos na aula Teórica existe uma necessidade de se estimar um modelo homecedástico, ou seja , que os erros possuem variância comum.
+
+```{r}
+levene_res <- lapply(
+  X = dados, FUN = function(data){with(data, leveneTest(indice, operadora))}
+)
+
+bartlett_res <- lapply(
+  X = dados, FUN = function(data){bartlett.test(indice ~ operadora, data = data)}
+)
+
+levene_resumo <- data.frame(
+  servico = names(levene_res),
+  estatistica_F = sapply(levene_res, function(x){x[['F value']][1]}),
+  p_valor = sapply(levene_res, function(x){x[['Pr(>F)']][1]}),
+  row.names = NULL
+)
+
+bartlett_resumo <- data.frame(
+  servico = names(bartlett_res),
+  K_squared = sapply(bartlett_res, function(x){x[['statistic']][1]}),
+  p_valor = sapply(bartlett_res, function(x){x[['p.value']][1]}),
+  row.names = NULL
+)
+
+print(list(levene = levene_resumo, bartlett = bartlett_resumo))
+```
+
+```{r}
+pos_pre = data.frame(dados["pospre"])
+head(pos_pre)
+```
+
+
+```{r}
+anova_pos_pre <- aov(pospre.indice ~ pospre.operadora, data = pos_pre)
+resumo_pos_pre <- summary(anova_pos_pre);resumo_pos_pre
+```
+
+
+### Gráfico de Avaliação de Normalidade dos Resíduos
+
+```{r}
+plot(anova_pos_pre)
+```
+
+
+```{r}
+bl = data.frame(dados["bl"])
+head(bl)
+```
+
+
+```{r}
+anova_bl <- aov(bl.indice ~ bl.operadora, data = bl)
+resumo_bl <- summary(anova_bl);resumo_bl
+```
+
+
+```{r}
+plot(anova_bl)
+```
+
+## Teste ANOVA
+
+
+```{r}
+anovas <- lapply(
+  X = dados, FUN = function(data){aov(indice ~ operadora, data = data)}
+)
+anovas <- anovas[base::setdiff(names(anovas), 'bl')]
+anovas_summary <- lapply(
+  X = anovas, FUN = summary
+)
+
+# Teste robusto
+reg_mean <- lm(indice ~ operadora, data = dados$bl)
+anova_bl <- Anova(reg_mean, white.adjust = TRUE)
+
+extrair_estat <- function(summary_aov, estat){
+  # summary_aov: summary.aov, estat: character(1)
+  summary_aov[[1]][[estat]][1]
+}
+
+
+anova_resumo <- data.frame(
+  servico = c(names(anovas_summary), 'bl'),
+  estat_F = c(
+    sapply(anovas_summary, extrair_estat, estat = 'F value'),
+    anova_bl[1, 'F']
+  ),
+  p_valor = c(
+    sapply(anovas_summary, extrair_estat, estat = 'Pr(>F)'),
+    anova_bl[1, 'Pr(>F)']
+  ),
+  variancia_homo = c('SIM', 'SIM', 'SIM', 'NÃO'),
+  row.names = NULL
+)
+
+
+print(list(anova_resumo))
+```
+
+## Teste Tukey
+
+```{r}
+# POS e PRE
+tuk_pospre <- HSD.test(
+  anovas$pospre, "operadora", group = T, alpha = 0.05, console = T
+)
+```
+
+```{r}
+plot(tuk_pospre)
+```
+
+
+```{r}
+# TV
+tuk_tv <- HSD.test(
+  anovas$tv, "operadora", group = T, alpha = 0.05, console = T
+)
+```
+
+```{r}
+plot(tuk_tv)
+```
+
+```{r}
+# TF
+tuk_tf <- HSD.test(
+  anovas$tf, "operadora", group = T, alpha = 0.05, console = T
+)
+```
+
+```{r}
+plot(tuk_tf)
+```
+
+###  Teste Não Paramétrico de Mann-Whitney
+
+```{r}
+data_bl <- dados$bl
+data_bl <- data_bl %>% 
+  mutate(operadora = as.character(operadora))
+
+
+resumo_bl <- data_bl %>% 
+  group_by(operadora) %>% 
+  summarise(
+    N = n(),
+    iqp_medio = mean(indice, na.rm = TRUE),
+    std = sd(indice, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>% 
+  arrange(desc(iqp_medio)) %>% 
+  as.data.frame()
+print(resumo_bl)
+```
+
+```{r}
+# Gerando pares de operadoras para teste
+operadoras <- unique(data_bl$operadora)
+operadoras <- combn(
+  x = operadoras, m = 2, simplify = FALSE
+)
+names(operadoras) <- sapply(
+  operadoras, function(x){paste(x, collapse = '-')}
+)
+
+# Testando pares de operadoras
+testes_wilcox <- lapply(
+  X = operadoras, FUN = wilcox_teste, f. = indice ~ operadora,
+  groups = 'operadora', data = data_bl
+)
+
+resumo_wilcox <- data.frame(
+  comparacao = names(testes_wilcox),
+  statistic_W = sapply(testes_wilcox, `[[`, i = 'statistic'),
+  p_valor = sapply(testes_wilcox, `[[`, i = 'p.value'),
+  row.names = NULL
+)
+
+print(list(resumo_wilcox))
+```
+
+```{r}
+# Média do índice por operadaora
+medias_bl <- data_bl %>% 
+  group_by(operadora) %>% 
+  summarise(indice_medio = mean(indice), .groups = 'drop')
+medias_nulo <- medias_bl %>% 
+  mutate(indice_medio = 0)
+medias <- rbind(medias_bl, medias_nulo)
+
+p1 <- medias_bl %>% 
+  ggplot(aes(x = operadora, y = indice_medio)) +
+  geom_point(color = '#808000', size = 2.5) +
+  geom_line(data = medias, aes(x = operadora, y = indice_medio), color = '#808000') +
+  theme_light() +
+  labs(
+    x = 'Operadora', y = 'Índice',
+    title = 'Índice médio por operadora - BL'
+  ) +
+  theme(
+    plot.title = element_text(hjust = .5)
+  )
+
+print(p1)
+```

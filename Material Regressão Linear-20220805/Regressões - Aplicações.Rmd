@@ -1,0 +1,150 @@
+---
+title: "Regressão - Aplicações"
+author: "Professor João Gabriel de Moraes Souza"
+date: "29/07/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Esse exemplo segue baseado na aplicação feita em ["LAMFO Aplicações em Regressão"](https://lamfo-unb.github.io/2020/02/07/O-M%C3%A9todo-dos-M%C3%ADnimos-Quadrados-Ordin%C3%A1rios-e-Regress%C3%A3o-Linear-Simples/) pelo assistente de pesquisa do *LAMFO* João Pedro Fontoura da Silva.
+
+# Regressão Linear Simples
+
+Como exemplo de aplicação de regressão linear, queremos relacionar notas de testes com a proporção de estudantes por professor obtidos de uma base de dados referentes a escolas da Califórnia (EUA). A nota dos testes (**TestScore**) é a média das notas de leitura e matemática para classes do 5º ano; já o tamanho das salas é medido pela proporção de estudantes relativa à quantidade de professores (que a partir deste ponto será identificada como *STR*, ou student-teacher ratio). Os dados são provenientes do banco de dados CASchools, contido no pacote AER disponível para R.
+
+## Importando as Bibliotecas Necessárias 
+
+```{r}
+suppressMessages(library(AER))
+suppressMessages(library(ggplot2))
+suppressMessages(library(ggpubr))
+suppressMessages(library(olsrr))
+suppressMessages(library(car))
+suppressMessages(library(sandwich))
+data(CASchools)
+head(CASchools)
+```
+
+
+É importante perceber que as duas variáveis de interesse não estão incluídas no pacote, então faz-se necessário computá-las manualmente a partir dos dados contidos em **CASchools**.
+
+## Computando os Dados de Interesse
+
+Com isso iremos construir as variáveis de interesse do nosso exemplo.
+
+```{r}
+CASchools$STR = CASchools$students/CASchools$teachers
+CASchools$score = (CASchools$read + CASchools$math)/2
+head(CASchools)
+```
+
+## Analisando as FDPs das variáveis de interesse
+
+Plotando os gráficos para *STR* :
+
+```{r}
+ggplot(CASchools) + 
+  geom_density(aes(x=STR), colour = "red") +
+  geom_histogram(aes(x=STR, y=..density..)) +
+  theme_classic()
+```
+
+Plotando os gráficos para *score* :
+
+```{r}
+ggplot(CASchools) + 
+  geom_density(aes(x=score), colour = "red") +
+  geom_histogram(aes(x=score, y=..density..)) +
+  theme_classic()
+```
+
+
+
+## Estimando o Modelo de Regressão
+
+De modo a estimar o modelo por MQO, definindo **TestScore** como a variável dependente e **STR** como a variável independente, fazemos uso da função **lm()** do R para realizar uma regressão linear simples.
+
+```{r}
+# Estimando o modelo
+reg_linear <- lm(score ~ STR, data = CASchools)
+summary(reg_linear)
+```
+
+## Diagnóstico do Modelo
+
+```{r}
+ols_plot_resid_qq(reg_linear)
+```
+
+```{r}
+ols_test_normality(reg_linear)
+```
+
+```{r}
+ols_test_correlation(reg_linear)
+```
+
+```{r}
+ols_plot_resid_fit(reg_linear)
+```
+
+```{r}
+ols_plot_resid_hist(reg_linear)
+```
+
+### Testes de Heterocedasticidade
+
+```{r}
+lmtest::bptest(reg_linear)
+```
+
+```{r}
+car::ncvTest(reg_linear)
+```
+
+## Corrigindo as Estimações para Heterocedasticidade
+
+```{r}
+coeftest(reg_linear, vcov = vcovHC(reg_linear, "HC1")) 
+```
+
+## Plotando as observações em um Gráfico
+
+Agora iremos plotar os dados e o modelo estimado em um gráfico.
+
+1º plotamos o gráfico só com as observações:
+
+
+```{r}
+
+data.graph = ggplot(CASchools, aes(x=STR, y=score))+
+                     geom_point() +
+                     theme_classic()
+data.graph
+```
+
+Agora plotamos o gráfico com uma tendência linear, que é exatamente o que a regressão faz:
+
+```{r}
+
+data.graph = data.graph + 
+  geom_smooth(method="lm", col="red", level=0.95)            
+
+data.graph
+```
+
+Por fim plotamos o gráfico com a regressão linear proposta
+
+```{r}
+data.graph <- data.graph +
+  stat_regline_equation() +
+  xlim(14, 26) +
+  ylim(600, 750)
+
+data.graph
+```
